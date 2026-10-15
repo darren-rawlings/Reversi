@@ -1,7 +1,7 @@
-using GameTemplate.Core;
+using Reversi.Core;
 using Xunit;
 
-namespace GameTemplate.Tests;
+namespace Reversi.Tests;
 
 public class ScoreboardTests
 {
