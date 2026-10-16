@@ -55,6 +55,7 @@ public partial class Main : Node3D
 
 	private bool _demo;
 	private bool _quitAfterDemo;
+	private string? _clip;
 	private float _initialSpin;
 
 	private bool VsComputer => _settings.Mode == GameMode.PlayerVsComputer || _demo;
@@ -88,16 +89,11 @@ public partial class Main : Node3D
 		_hud = new GameHud(theme);
 		AddChild(_hud);
 		_hud.Build(new HudOptions(Title, "Tap a glowing square  ·  Drag sideways to spin", PiecesLabel: "Discs",
-			PieceName: s => $"{Styles.Pieces(s).NameOne} & {Styles.Pieces(s).NameTwo}"),
-			_settings.Muted, _settings.Mode, _settings.Difficulty, _settings.Board, _settings.Pieces);
+			PieceName: s => $"{Styles.Pieces(s).NameOne} & {Styles.Pieces(s).NameTwo}"), _settings);
 		_hud.NewGamePressed += OnNewGamePressed;
 		_hud.UndoPressed += OnUndoPressed;
-		_hud.MuteToggled += muted =>
-		{
-			_settings.Muted = muted;
-			AudioServer.SetBusMute(0, muted);
-			_settings.Save();
-		};
+		_hud.RestartPressed += OnRestartPressed;
+		_hud.SetTutorial(Tutorial.Pages);
 		_hud.ModeChosen += (mode, difficulty) =>
 		{
 			_settings.Mode = mode;
@@ -120,9 +116,18 @@ public partial class Main : Node3D
 				piece?.ApplyStyle(Discs);
 		};
 
-		_spin = new SpinControl(_rig, () => !_busy);
+		_spin = new SpinControl(_rig, () => !_busy && !_settings.FreezeBoard);
 		_spin.Tapped += OnTapped;
+		if (_clip != null)
+		{
+			_hud.Visible = false;
+			_ = PlayClip(_clip);
+			return;
+		}
 		_ = StartGame();
+		if (!_demo)
+			_hud.OfferTutorialOnce(_settings);
+		_hud.ApplyDevFlags();
 	}
 
 	// ---------------------------------------------------------------- World
@@ -259,7 +264,10 @@ public partial class Main : Node3D
 		{
 			_roundCounted = true;
 			if (_game.Winner is { } winner)
+			{
 				_wins.Win(first: winner == Side.Dark);
+				await SetWinnerAlight(winner, square);
+			}
 		}
 		_busy = false;
 		RefreshUi();
@@ -331,10 +339,133 @@ public partial class Main : Node3D
 		_busy = true;
 		_roundCounted = false;
 		_note = null;
+		PutOutFire();
 		_game.Reset();
 		await SyncPieces();
 		_busy = false;
 		RefreshUi();
+	}
+
+	/// <summary>
+	/// Start over: free once the game is over or before anyone has moved; otherwise against the
+	/// computer it's a resignation (the computer gets the win) unless the player watches an ad.
+	/// </summary>
+	private void OnRestartPressed()
+	{
+		if (_busy)
+			return;
+		if (_game.IsOver || _game.MovesMade == 0)
+		{
+			_ = StartGame();
+			return;
+		}
+		_hud.AskRestart(VsComputer && !_demo, countLoss =>
+		{
+			if (countLoss)
+				_wins.Win(first: Human != Side.Dark);
+			_ = StartGame();
+		}, then => _ads.ShowRewarded(rewarded: then, closed: () => { }));
+	}
+
+	// ---------------------------------------------------------------- The winner's fire
+
+	private readonly List<Flames> _fires = new();
+
+	/// <summary>
+	/// Every one of the winner's discs catches fire, in a wave spreading from the last disc played;
+	/// the nearest dozen get real flames (more would be too much for a phone), the rest glow.
+	/// </summary>
+	private async Task SetWinnerAlight(Side winner, int from)
+	{
+		var origin = SquareCenter(from);
+		var discs = Enumerable.Range(0, 64).Where(s => _game.At(s) == winner && _pieces[s] != null)
+			.OrderBy(s => (SquareCenter(s) - origin).Length()).ToList();
+		for (int i = 0; i < discs.Count; i++)
+		{
+			var piece = _pieces[discs[i]]!;
+			_fires.Add(Flames.SetAlight(_rig, piece.Position + new Vector3(0, 0.05f, 0), piece.Faces, radius: 0.28f, size: 0.8f, withLight: i == 0, particles: i < 12));
+			if (i < 12)
+				await Wait(0.06f);
+		}
+		_hud.SetStatus(NameOf(winner) == "You" ? "You win!" : $"{NameOf(winner)} wins!", ColorOf(winner));
+		await Wait(0.4f);
+	}
+
+	private void PutOutFire()
+	{
+		foreach (var fire in _fires)
+			fire.Extinguish();
+		_fires.Clear();
+		foreach (var piece in _pieces)
+		{
+			if (piece == null)
+				continue;
+			foreach (var face in piece.Faces)
+				face.MaterialOverlay = null;
+		}
+	}
+
+	// ---------------------------------------------------------------- Tutorial clips
+
+	/// <summary>
+	/// Plays one scripted scene for a tutorial video, with the HUD hidden. Recorded with
+	/// `--write-movie tutorial/name.ogv --resolution 600x600 -- --clip=name`.
+	/// </summary>
+	private async Task PlayClip(string clip)
+	{
+		_settings.Mode = GameMode.PlayerVsPlayer;
+		_settings.Muted = false;
+		_game.Reset();
+		switch (clip)
+		{
+			case "place":
+				await SyncPieces();
+				ShowHints(_game.LegalSquares());
+				await Wait(1.4f);
+				await PlayMove(19);
+				ShowHints(_game.LegalSquares());
+				await Wait(1.0f);
+				await PlayMove(_game.LegalSquares().First());
+				ShowHints(_game.LegalSquares());
+				await Wait(1.0f);
+				await PlayMove(_game.LegalSquares().Last());
+				await Wait(1.2f);
+				break;
+			case "wave":
+			{
+				ulong dark = ReversiGame.Bit(2, 5) | ReversiGame.Bit(7, 4) | ReversiGame.Bit(3, 3) | ReversiGame.Bit(4, 5);
+				ulong light = ReversiGame.Bit(6, 1) | ReversiGame.Bit(5, 2) | ReversiGame.Bit(4, 3) | ReversiGame.Bit(3, 4)
+					| ReversiGame.Bit(7, 1) | ReversiGame.Bit(7, 2) | ReversiGame.Bit(7, 3) | ReversiGame.Bit(4, 4);
+				_game.Load(dark, light, Side.Dark);
+				await SyncPieces();
+				_hints[56].Visible = true;
+				await Wait(1.4f);
+				await PlayMove(56);
+				await Wait(1.8f);
+				break;
+			}
+			case "end":
+			{
+				// A real game played most of the way through, then finished by the computer.
+				var computer = new ComputerPlayer(Difficulty.Medium, seed: 4);
+				while (64 - System.Numerics.BitOperations.PopCount(_game.DarkDiscs | _game.LightDiscs) > 6 && !_game.IsOver)
+					_game.Play(computer.ChooseMove(_game));
+				var dark = _game.DarkDiscs;
+				var light = _game.LightDiscs;
+				var turn = _game.Turn;
+				_game.Load(dark, light, turn);
+				await SyncPieces();
+				await Wait(0.6f);
+				while (!_game.IsOver)
+				{
+					await PlayMove(computer.ChooseMove(_game));
+					await Wait(0.3f);
+				}
+				await Wait(2.5f);
+				break;
+			}
+		}
+		GetTree().Quit();
 	}
 
 	/// <summary>
@@ -388,6 +519,7 @@ public partial class Main : Node3D
 	/// <summary>Takes back the computer's replies and then your last move.</summary>
 	private async Task UndoLastTurn()
 	{
+		PutOutFire();
 		_computer.Cancel();
 		if (_game.IsOver && _roundCounted && _game.Winner is { } winner)
 			_wins.Unwin(first: winner == Side.Dark);
@@ -427,6 +559,7 @@ public partial class Main : Node3D
 		_hud.SetScore($"{NameOf(Side.Dark)}  {_game.Count(Side.Dark)}   —   {_game.Count(Side.Light)}  {NameOf(Side.Light)}");
 		_hud.SetNewGameVisible(_game.IsOver && !_busy);
 		_hud.SetUndoVisible(CanUndo);
+		_hud.SetRestartVisible(!_game.IsOver);
 
 		if (_game.IsOver)
 		{
@@ -489,6 +622,9 @@ public partial class Main : Node3D
 					break;
 				case "--spin":
 					_initialSpin = Mathf.DegToRad(float.Parse(value, System.Globalization.CultureInfo.InvariantCulture));
+					break;
+				case "--clip":
+					_clip = value;
 					break;
 			}
 		}

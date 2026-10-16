@@ -58,6 +58,16 @@ public sealed class ReversiGame
 
 	public ReversiGame Clone() => new(this);
 
+	/// <summary>Sets up a position (for tutorial clips and tests).</summary>
+	public void Load(ulong dark, ulong light, Side turn)
+	{
+		DarkDiscs = dark;
+		LightDiscs = light;
+		Turn = turn;
+		IsOver = false;
+		_history.Clear();
+	}
+
 	public int MovesMade => _history.Count;
 
 	public static ulong Bit(int row, int column) => 1UL << (row * Size + column);
