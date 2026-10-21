@@ -26,7 +26,9 @@ public partial class Main : Node3D
 	public const string Title = "Reversi";
 
 	/// <summary>Google's test ad units until the real ones exist in AdMob (see the release playbook).</summary>
-	private static readonly AdMobConfig AdUnits = AdMobConfig.Test;
+	private static readonly AdMobConfig AdUnits = new(
+		InterstitialUnitId: "ca-app-pub-3310172999423635/8969720496",
+		RewardedUnitId: "ca-app-pub-3310172999423635/1384453529");
 
 	private const Side Human = Side.Dark;
 
